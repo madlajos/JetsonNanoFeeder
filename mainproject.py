@@ -17,6 +17,7 @@ camera_gain = 15
 camera_gamma = 1
 
 # Video parameters
+recordVideo = True
 output_video_filename = "output_video.mp4"  # Change to your desired file name
 use_ffmpeg = True  # Set this to True to use FFmpeg for video encoding
 
