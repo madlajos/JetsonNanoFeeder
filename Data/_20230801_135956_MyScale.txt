@@ -1,0 +1,1 @@
+Date	Time	ElapsedMicrosecs	FrameNumber	WeightFromScale [g]
