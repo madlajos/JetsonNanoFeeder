@@ -16,12 +16,9 @@ camera_exposure_time_ms = 300
 camera_gain = 15
 camera_gamma = 1
 
-# Video parameters
+# Output Video parameters
 recordVideo = True
-output_video_filename = "output_video.mp4"  # Change to your desired file name
-use_ffmpeg = True  # Set this to True to use FFmpeg for video encoding
-
-
+output_video_filename = "output_video.mp4"
 # FFMPEG Video Capture Settings
 # TODO: if image rotation is applied later, height and width should be switched up
 video = Video(output_video_filename, camera_image_height, camera_image_width, 'gray', camera_framerate)
