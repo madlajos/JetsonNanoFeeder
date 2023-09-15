@@ -171,7 +171,6 @@ if not use_camera:
     cap = cv2.VideoCapture(input_video_filename)
     if not cap.isOpened():
         print("Error: Cannot open input video file.")
-        break
     else:
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
