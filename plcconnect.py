@@ -48,10 +48,10 @@ def GetFeederMass(plc):
     #plc = snap7.client.Client()
     #plc.connect(plc_ip, 0, 1)
     
-    #data = plc.db_read(ReadBlock, MassPos, MassSize)
-    #mass_int = struct.unpack(">I", data)[0]
-    #plc_mass = struct.unpack("f", struct.pack("I", mass_int))[0]
+    data = plc.db_read(ReadBlock, MassPos, MassSize)
+    mass_int = struct.unpack(">I", data)[0]
+    plc_mass = struct.unpack("f", struct.pack("I", mass_int))[0]
     #plc.disconnect()
-    plc_mass = 0
+    #plc_mass = 0
     return plc_mass
 

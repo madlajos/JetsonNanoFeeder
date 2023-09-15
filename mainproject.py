@@ -7,25 +7,37 @@ import struct
 import plcconnect
 from video import Video
 
+####### User Variables ######
+### Input Video Source Settings ###
+use_camera = True
+#input_video_filename = "input_video.mp4" 
 
-# User Variables
+### Camera Settings ###
 camera_image_width = 300
 camera_image_height = 500
 camera_framerate = 60
 camera_exposure_time_ms = 300
 camera_gain = 15
 camera_gamma = 1
+camera_centerROI_x = True
+camera_centerROI_y = True
+camera_offsetROI_x = 200
+camera_offsetROI_y = 200
 
-# Video parameters
-recordVideo = True
-output_video_filename = "output_video.mp4"  # Change to your desired file name
-use_ffmpeg = True  # Set this to True to use FFmpeg for video encoding
+### Video Display Settings ###
+use_video_display = True
+window_width = 800
+window_height = 800
 
-
+### Output Video Settings ###
+record_video = True
+output_video_filename = "output_video.mp4"
 # FFMPEG Video Capture Settings
 # TODO: if image rotation is applied later, height and width should be switched up
 video = Video(output_video_filename, camera_image_height, camera_image_width, 'gray', camera_framerate)
 
+### PLC Settings ###
+use_PLC = False
 plc_ip = "192.168.0.30"
 
 imageIndex = 0
@@ -33,7 +45,6 @@ baseline_brightness = 0
 cumulative_brightness = 0
 starting_plc_mass = 0
 fed_plc_mass = 0
-
 
 def setupCamera():
     # Set camera parameters
@@ -51,15 +62,20 @@ def setupCamera():
                                                             camera.Height.GetMax(), camera.Height.GetInc())
     camera.Height = nearest_accepted_height
 
-    # Center ROI
-    camera.OffsetX.SetValue((camera.SensorWidth.GetValue() // 2 - nearest_accepted_width // 2) 
-                            // camera.Width.GetInc() * camera.Width.GetInc())
-    camera.OffsetY.SetValue(((camera.SensorHeight.GetValue() // 2 - nearest_accepted_height // 2) 
-                            // camera.Height.GetInc() * camera.Height.GetInc()) // 2 * 2) 
+    # Set ROI Offset; Either Center or by Fix value
+    if camera_centerROI_x:
+        camera.OffsetX.SetValue((camera.SensorWidth.GetValue() // 2 - nearest_accepted_width // 2) 
+                                // camera.Width.GetInc() * camera.Width.GetInc())
+    else:
+        camera.OffsetX.SetValue(camera_offsetROI_x)
+
+    if camera_centerROI_y:
+        camera.OffsetY.SetValue(((camera.SensorHeight.GetValue() // 2 - nearest_accepted_height // 2) 
+                                // camera.Height.GetInc() * camera.Height.GetInc()) // 2 * 2) 
+    else:
+        camera.OffsetY.SetValue(camera_offsetROI_y)
     
-   
-    #camera.PixelFormat.SetValue(pylon.PixelFormat_Mono8)
-    # Start grabbing frames
+    # Start image aquisition
     camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
 
 def calculateNearestAcceptedImageSize(user_size, min_size, max_size, min_increment):
@@ -84,7 +100,6 @@ def analyseImage(frame_mono8):
         if area >= 1000:
              contours_filtered.append(contour)
     
-    
     # Exclude particles touching the edge of the image. Slows down analysis.
     #    for point in contour:
     #        x, y = point[0]
@@ -95,16 +110,13 @@ def analyseImage(frame_mono8):
 
     contours_image = cv2.cvtColor(frame_mono8, cv2.COLOR_GRAY2BGR)
     cv2.drawContours(contours_image, contours, -1, (0, 255, 0), 2)
-
     particle_count = len(contours_filtered)
-
     average_brightness = round(cv2.mean(frame_mono8)[0], 3)
     
     current_time = time.time() * 1000
     time_diff = current_time - global_prev_time
 
-
-     # Display the particle count on the image
+    # Display the particle count on the image
     cv2.putText(contours_image, f'Blob Count: {particle_count}', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
     # Display the average brightness on the image
     cv2.putText(contours_image, f'Corr. Brightness: {round((average_brightness - baseline_brightness), 3)}', (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
@@ -114,7 +126,6 @@ def analyseImage(frame_mono8):
     cv2.putText(contours_image, f'Total Brightness: {cumulative_brightness}', (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
     # Display the fed mass on the image
     cv2.putText(contours_image, f'Mass Fed (PLC): {round(fed_plc_mass, 3)}g', (10, 190), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-
 
     cv2.imshow('Camera', contours_image)
 
@@ -134,52 +145,80 @@ def connectToPLC(plc_ip):
     return plc, connected_to_plc
 
 
-# Define the initial size of the display window
-window_width = 800
-window_height = 800
-cv2.namedWindow('Camera', cv2.WINDOW_NORMAL)
-cv2.resizeWindow('Camera', window_width, window_height)
-
-
-# Find and open the camera # Create an ImageFormatConverter object
+# Find and open the camera
+# Create an ImageFormatConverter object
 camera = None
-try:
-    camera = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateFirstDevice())
-    camera.Open()
-    converter = pylon.ImageFormatConverter()
-    setupCamera()
-except Exception as e:
-    print("Failed to open camera:", str(e))
+if use_camera:
+    try:
+        camera = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateFirstDevice())
+        camera.Open()
+        converter = pylon.ImageFormatConverter()
+        setupCamera()
+    except Exception as e:
+        print("Failed to open camera:", str(e))
 
+# Connect to the PLC
+if use_PLC:
+    try:
+        plc, connected_to_plc = connectToPLC(plc_ip)
+        if connected_to_plc:
+            print("Successfully connected to the PLC!")
+    except Exception as e:
+        print("Failed to connect to PLC:", str(e))
+
+# Create a VideoCapture object for reading from a saved video file if use_camera is False
+if not use_camera:
+    cap = cv2.VideoCapture(input_video_filename)
+    if not cap.isOpened():
+        print("Error: Cannot open input video file.")
+        break
+    else:
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+
+# Create the Live View Window
+if use_video_display:
+    cv2.namedWindow('Camera', cv2.WINDOW_NORMAL)
+    cv2.resizeWindow('Camera', window_width, window_height)
+
+# Initial time for speed calculation
 global_prev_time = time.time() * 1000
 
-try:
-    plc, connected_to_plc = connectToPLC(plc_ip)
-    if connected_to_plc:
-        print("Successfully connected to the PLC!")
-except Exception as e:
-    print("Failed to connect to PLC:", str(e))
-
-while camera is not None and camera.IsGrabbing():
-    grab_result = camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
-
-    if grab_result.GrabSucceeded():
-        # Convert the frame to BGR using ImageFormatConverter
-        image = pylon.PylonImage()
-        image.AttachGrabResultBuffer(grab_result)
-
-        image.PixelFormat = "Mono8"
-        converted_image = converter.Convert(image)
-        frame_mono8 = converted_image.GetArray()
-        #frame_mono8 = cv2.rotate(frame_mono8, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        average_brightness = analyseImage(frame_mono8)
-
-        # Write frame to output video
-        video.write(frame_mono8)
-
+while ((camera is not None and camera.IsGrabbing()) or (not use_camera and ret)):
+    if(use_camera):    
+        grab_result = camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
         global_prev_time = time.time() * 1000
-        
-    grab_result.Release()
+
+        if grab_result.GrabSucceeded():
+            # Convert the frame to BGR using ImageFormatConverter
+            image = pylon.PylonImage()
+            image.AttachGrabResultBuffer(grab_result)
+
+            image.PixelFormat = "Mono8"
+            converted_image = converter.Convert(image)
+            frame_mono8 = converted_image.GetArray()
+            
+            #frame_mono8 = cv2.rotate(frame_mono8, cv2.ROTATE_90_COUNTERCLOCKWISE)
+            average_brightness = analyseImage(frame_mono8)
+
+        grab_result.Release()
+    
+    else:
+        ret, frame = cap.read()
+        if not ret:
+            # End of video file, break the loop
+            break
+
+        # Convert the frame to grayscale if necessary
+        if frame.shape[2] == 3:  # Check if the frame is in color
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+        average_brightness = analyseImage(frame)
+
+    # Write frame to output video if toggled
+    if record_video:
+        video.write(frame)
+    
     imageIndex += 1
 
     # Look for the highest brightness for baseline and get starting mass from PLC
@@ -193,6 +232,7 @@ while camera is not None and camera.IsGrabbing():
         if(average_brightness > 0):
             cumulative_brightness += average_brightness
             cumulative_brightness = round(cumulative_brightness, 3)
+
     if connected_to_plc:
         plc_version = plcconnect.GetFeederVersion(plc)
         plc_mass = plcconnect.GetFeederMass(plc)
@@ -203,11 +243,12 @@ while camera is not None and camera.IsGrabbing():
         if connected_to_plc:
             plc.disconnect()
 
-        # if recordvideo:
-        video.release()
+        if record_video:
+            video.release()
 
-        camera.StopGrabbing()
-        camera.Close()
-        cv2.destroyAllWindows()
+        if use_camera:
+            camera.StopGrabbing()
+            camera.Close()
+            cv2.destroyAllWindows()
 
         break
