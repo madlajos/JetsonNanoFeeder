@@ -6,6 +6,7 @@ from snap7.util import *
 import struct
 import plcconnect
 from video import Video
+from enum import Enum
 
 ####### User Variables ######
 ### Input Video Source Settings ###
@@ -24,6 +25,8 @@ camera_centerROI_y = False
 camera_offsetROI_x = 200
 camera_offsetROI_y = 600
 
+brightness_to_mass_constant = 0.069
+
 ### Video Display Settings ###
 use_video_display = True
 window_width = 800
@@ -40,12 +43,28 @@ video = Video(output_video_filename, camera_image_width, camera_image_height, 'g
 use_PLC = True
 plc_ip = "192.168.0.30"
 
+# Settings for data transmission to PLC  
+class PLCDataFrequency(Enum):
+    AFTER_EVERY_FRAME = 1
+    AFTER_BRIGHTNESS_CHANGE = 2
+    AFTER_INTERVAL = 3
+
+data_interval_ms = 1000 
+PLC_data_frequency = PLCDataFrequency.AFTER_EVERY_FRAME
+
+# Image analysis settings
+use_brightness_correction = True
+frames_for_brightness_baseline = 49
+
+
 imageIndex = 0
 baseline_brightness = 0
 cumulative_brightness = 0
+cumulative_camera_mass = 0
 connected_to_plc = False
 starting_plc_mass = 0
 fed_plc_mass = 0
+feeder_speed = 0
 
 
 def setupCamera():
@@ -167,6 +186,11 @@ if use_PLC:
     except Exception as e:
         print("Failed to connect to PLC:", str(e))
 
+# Get Startint PLC Mass and PLC Version
+if use_PLC and connected_to_plc: 
+    starting_plc_mass = plcconnect.GetFeederMass(plc)
+    plc_version = plcconnect.GetFeederVersion(plc)
+
 # Create a VideoCapture object for reading from a saved video file if use_camera is False
 if not use_camera:
     cap = cv2.VideoCapture(input_video_filename)
@@ -175,7 +199,6 @@ if not use_camera:
     else:
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-
 # Create the Live View Window
 if use_video_display:
     cv2.namedWindow('Camera', cv2.WINDOW_NORMAL)
@@ -183,6 +206,7 @@ if use_video_display:
 
 # Initial time for speed calculation
 global_prev_time = time.time() * 1000
+last_data_sent_time = time.time() * 1000
 
 while ((camera is not None and camera.IsGrabbing()) or (not use_camera and ret)):
     if(use_camera):    
@@ -222,22 +246,37 @@ while ((camera is not None and camera.IsGrabbing()) or (not use_camera and ret))
     imageIndex += 1
 
     # Look for the highest brightness for baseline and get starting mass from PLC
-    if(imageIndex <= 49):
+    if(use_brightness_correction) and imageIndex <= frames_for_brightness_baseline:
         if(baseline_brightness < average_brightness):
-            baseline_brightness = average_brightness
-        if use_PLC and connected_to_plc: 
-            starting_plc_mass = plcconnect.GetFeederMass(plc)
+            baseline_brightness = average_brightness   
     # Subtract baseline brightness from further images
     else:
         average_brightness -= baseline_brightness
-        if(average_brightness > 0):
-            cumulative_brightness += average_brightness
-            cumulative_brightness = round(cumulative_brightness, 3)
+    
+    if(average_brightness > 0):
+        cumulative_brightness += average_brightness
+        cumulative_brightness = round(cumulative_brightness, 3)
+        camera_mass = average_brightness * brightness_to_mass_constant
+        cumulative_camera_mass += camera_mass
 
-    if connected_to_plc:
-        plc_version = plcconnect.GetFeederVersion(plc)
-        plc_mass = plcconnect.GetFeederMass(plc)
-        fed_plc_mass = starting_plc_mass - plc_mass
+    # Data Transmission to and from PLC
+    if PLC_data_frequency == PLCDataFrequency.AFTER_EVERY_FRAME:
+         if connected_to_plc:        
+            plc_mass = plcconnect.GetFeederMass(plc)
+            fed_plc_mass = starting_plc_mass - plc_mass
+            # plcconnect.SendFeederSpeed(plc, feeder_speed)
+
+    elif PLC_data_frequency == PLCDataFrequency.AFTER_BRIGHTNESS_CHANGE:
+        if connected_to_plc and (average_brightness > 0):        
+            plc_mass = plcconnect.GetFeederMass(plc)
+            fed_plc_mass = starting_plc_mass - plc_mass
+            # plcconnect.SendFeederSpeed(plc, feeder_speed)
+
+    elif PLC_data_frequency == PLCDataFrequency.AFTER_INTERVAL:
+        if connected_to_plc and ((global_prev_time - last_data_sent_time) >= data_interval_ms):        
+            plc_mass = plcconnect.GetFeederMass(plc)
+            fed_plc_mass = starting_plc_mass - plc_mass
+            # plcconnect.SendFeederSpeed(plc, feeder_speed)
 
     # Check for 'q' key press to exit the loop
     if cv2.waitKey(1) & 0xFF == ord('q') or cv2.getWindowProperty('Camera', cv2.WND_PROP_AUTOSIZE) == 1.0:

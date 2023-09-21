@@ -55,3 +55,26 @@ def GetFeederMass(plc):
     #plc_mass = 0
     return plc_mass
 
+# TODO: Needs Testing
+def start_feeder(plc):
+    db_w_buffer = bytearray(21)
+    snap7.util.set_bool(db_w_buffer, self.StartPos, True)
+
+    plc.client.db_write(WriteBlock, 0, db_w_buffer)
+
+# TODO: Needs Testing
+def stop_feeder(plc):
+    db_w_buffer = bytearray(21)
+    snap7.util.set_bool(db_w_buffer, plc.StartPos, False)
+
+    plc.client.db_write(self.WriteBlock, 0, db_w_buffer)
+
+# TODO: Needs Testing
+def SendFeederSpeed(plc, feeder_speed):
+    db_w_buffer = bytearray(21)
+    if feeder_speed is not None:
+        # Set the real value in the buffer
+        struct.pack_into(">f", db_w_buffer, RPMPos, feeder_speed)
+
+         # Write the data to the PLC
+        plc.db_write(WriteBlock, 0, db_w_buffer)
