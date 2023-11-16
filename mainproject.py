@@ -4,9 +4,11 @@ from pypylon import pylon
 import snap7
 from snap7.util import *
 import struct
-import plcconnect
+import plccomm
 from video import Video
 from enum import Enum
+import numpy as np
+import math
 
 ####### User Variables ######
 ### Input Video Source Settings ###
@@ -14,18 +16,16 @@ use_camera = True
 input_video_filename = "input_video.mp4" 
 
 ### Camera Settings ###
-camera_image_width = 400
+camera_image_width = 600
 camera_image_height = 600
 camera_framerate = 60
-camera_exposure_time_ms = 300
-camera_gain = 15
+camera_exposure_time_ms = 200
+camera_gain = 10
 camera_gamma = 1
 camera_centerROI_x = True
-camera_centerROI_y = False
+camera_centerROI_y = True
 camera_offsetROI_x = 200
 camera_offsetROI_y = 600
-
-brightness_to_mass_constant = 0.069
 
 ### Video Display Settings ###
 use_video_display = True
@@ -40,31 +40,30 @@ output_video_filename = "output_video.mp4"
 video = Video(output_video_filename, camera_image_width, camera_image_height, 'gray', camera_framerate)
 
 ### PLC Settings ###
-use_PLC = True
+use_PLC = False
 plc_ip = "192.168.0.30"
 
-# Settings for data transmission to PLC  
-class PLCDataFrequency(Enum):
-    AFTER_EVERY_FRAME = 1
-    AFTER_BRIGHTNESS_CHANGE = 2
-    AFTER_INTERVAL = 3
-
-data_interval_ms = 1000 
-PLC_data_frequency = PLCDataFrequency.AFTER_EVERY_FRAME
-
 # Image analysis settings
-use_brightness_correction = True
-frames_for_brightness_baseline = 49
+min_blob_area = 1000
+threshold_low = 60
+threshold_high = 240
 
+class MassCalcMethod(Enum):
+    BRIGHTNESS = 1
+    BLOBSIZE = 2
+
+mass_calculation_method = MassCalcMethod.BLOBSIZE
 
 imageIndex = 0
-baseline_brightness = 0
 cumulative_brightness = 0
 cumulative_camera_mass = 0
 connected_to_plc = False
 starting_plc_mass = 0
 fed_plc_mass = 0
 feeder_speed = 0
+cummulative_volume = 0
+feeder_state = 1
+plc_data_frequency = 1000
 
 
 def setupCamera():
@@ -109,17 +108,34 @@ def calculateNearestAcceptedImageSize(user_size, min_size, max_size, min_increme
         nearest_accepted_size = min_size + (diff // min_increment) * min_increment
     return nearest_accepted_size
 
+def getCameraImage():
+    grab_result = camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
+    if grab_result.GrabSucceeded():
+        image = pylon.PylonImage()
+        image.AttachGrabResultBuffer(grab_result)
+        image.PixelFormat = "Mono8"
+        converted_image = converter.Convert(image)
+        frame = converted_image.GetArray()
+    grab_result.Release()
+
+    return frame
+
 def analyseImage(frame_mono8):
-    _, frame_thresh = cv2.threshold(frame_mono8, 60, 240, cv2.THRESH_BINARY)
+    _, frame_thresh = cv2.threshold(frame_mono8, threshold_low, threshold_high, cv2.THRESH_BINARY)
     contours, _ = cv2.findContours(frame_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     contours_filtered = []
+    smaller_diameters = []
+    larger_diameters = []
+    frame_blob_volume = 0
+
     height, width = frame_thresh.shape[:2]
     
     for contour in contours:
         area = cv2.contourArea(contour)
-        if area >= 1000:
-             contours_filtered.append(contour)
+        if area >= min_blob_area:
+            contours_filtered.append(contour)
+            
     
     # Exclude particles touching the edge of the image. Slows down analysis.
     #    for point in contour:
@@ -132,25 +148,44 @@ def analyseImage(frame_mono8):
     contours_image = cv2.cvtColor(frame_mono8, cv2.COLOR_GRAY2BGR)
     cv2.drawContours(contours_image, contours, -1, (0, 255, 0), 2)
     particle_count = len(contours_filtered)
-    average_brightness = round(cv2.mean(frame_mono8)[0], 3)
+    
+    average_brightness = round(cv2.mean(frame_thresh)[0], 3)
+
+    #TODO: Volume-based mass calculation.
+    # Working principle:
+    # 1. Get the particle size (by user setting)
+    # 2. Summarize particle volume
+    # 3. Convert to mass
+    if mass_calculation_method == MassCalcMethod.BLOBSIZE:
+ 
+        for contour in contours_filtered:
+            # Fit minAreaRect
+            rect = cv2.minAreaRect(contour)
+            box = cv2.boxPoints(rect)
+            box = np.int0(box)
+
+            width = rect[1][0]
+            height = rect[1][1]
+
+            frame_blob_volume += pow((width + height)/ 2,3) * math.pi / 6 / pow(10, 6)
+
+            # Draw the contours and the fitted rectangle
+            cv2.drawContours(contours_image, [box], 0, (0, 255, 0), 2)
+            cv2.drawContours(contours_image, [contour], 0, (0, 0, 255), 2)
     
     current_time = time.time() * 1000
     time_diff = current_time - global_prev_time
 
-    # Display the particle count on the image
     cv2.putText(contours_image, f'Blob Count: {particle_count}', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-    # Display the average brightness on the image
-    cv2.putText(contours_image, f'Corr. Brightness: {round((average_brightness - baseline_brightness), 3)}', (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-    # Display the time difference on the image
-    cv2.putText(contours_image, f'Frametime: {int(time_diff)}ms', (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-    # Display the cumulative brightness on the image
-    cv2.putText(contours_image, f'Total Brightness: {cumulative_brightness}', (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-    # Display the fed mass on the image
-    cv2.putText(contours_image, f'Mass Fed (PLC): {round(fed_plc_mass, 3)}g', (10, 190), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+    cv2.putText(contours_image, f'Brightness: {round((average_brightness), 3)}', (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+    cv2.putText(contours_image, f'Blob Volume: {round((frame_blob_volume), 3)}', (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+    cv2.putText(contours_image, f'Cumm Blob Volume: {round((cummulative_volume), 3)}', (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+    cv2.putText(contours_image, f'Frametime: {int(time_diff)}ms', (10, 190), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
     cv2.imshow('Camera', contours_image)
 
-    return average_brightness   
+    #TODO: A return érték blobvolume/brightness legyen
+    return frame_blob_volume
 
 def connectToPLC(plc_ip):
     plc = snap7.client.Client()
@@ -162,7 +197,7 @@ def connectToPLC(plc_ip):
         print("Failed to connect to PLC:", str(e))
         plc = None
     
-    return plc, connected_to_plc
+    return plc, connected_to_plc      
 
 
 # Find and open the camera
@@ -186,11 +221,6 @@ if use_PLC:
     except Exception as e:
         print("Failed to connect to PLC:", str(e))
 
-# Get Startint PLC Mass and PLC Version
-if use_PLC and connected_to_plc: 
-    starting_plc_mass = plcconnect.GetFeederMass(plc)
-    plc_version = plcconnect.GetFeederVersion(plc)
-
 # Create a VideoCapture object for reading from a saved video file if use_camera is False
 if not use_camera:
     cap = cv2.VideoCapture(input_video_filename)
@@ -206,28 +236,22 @@ if use_video_display:
 
 # Initial time for speed calculation
 global_prev_time = time.time() * 1000
-last_data_sent_time = time.time() * 1000
+last_data_sent_time = global_prev_time
 
 while ((camera is not None and camera.IsGrabbing()) or (not use_camera and ret)):
-    if(use_camera):    
-        grab_result = camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
-        global_prev_time = time.time() * 1000
+    if connected_to_plc:
+        feeder_state, commstate, plc_data_frequency = plccomm.PollPLC(plc)
 
-        if grab_result.GrabSucceeded():
-            # Convert the frame to BGR using ImageFormatConverter
-            image = pylon.PylonImage()
-            image.AttachGrabResultBuffer(grab_result)
+    if use_camera and feeder_state == 1:
+        frame = getCameraImage()
+        if record_video:
+            video.write(frame)
 
-            image.PixelFormat = "Mono8"
-            converted_image = converter.Convert(image)
-            frame = converted_image.GetArray()
-            
-            #frame_mono8 = cv2.rotate(frame_mono8, cv2.ROTATE_90_COUNTERCLOCKWISE)
-            average_brightness = analyseImage(frame)
-
-        grab_result.Release()
+        #frame_mono8 = cv2.rotate(frame_mono8, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        volume_from_frame = analyseImage(frame)
     
-    else:
+    # Offline video analysis for testing
+    if not use_camera:
         ret, frame = cap.read()
         if not ret:
             # End of video file, break the loop
@@ -237,47 +261,18 @@ while ((camera is not None and camera.IsGrabbing()) or (not use_camera and ret))
         if frame.shape[2] == 3:  # Check if the frame is in color
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        average_brightness = analyseImage(frame)
-
-    # Write frame to output video if toggled
-    if record_video:
-        video.write(frame)
+        volume_from_frame = analyseImage(frame)
     
     imageIndex += 1
-
-    # Look for the highest brightness for baseline and get starting mass from PLC
-    if(use_brightness_correction) and imageIndex <= frames_for_brightness_baseline:
-        if(baseline_brightness < average_brightness):
-            baseline_brightness = average_brightness   
-    # Subtract baseline brightness from further images
-    else:
-        average_brightness -= baseline_brightness
+    cummulative_volume += volume_from_frame
+    global_prev_time = time.time() * 1000
     
-    if(average_brightness > 0):
-        cumulative_brightness += average_brightness
-        cumulative_brightness = round(cumulative_brightness, 3)
-        camera_mass = average_brightness * brightness_to_mass_constant
-        cumulative_camera_mass += camera_mass
-
-    # Data Transmission to and from PLC
-    if PLC_data_frequency == PLCDataFrequency.AFTER_EVERY_FRAME:
-         if connected_to_plc:        
-            plc_mass = plcconnect.GetFeederMass(plc)
-            fed_plc_mass = starting_plc_mass - plc_mass
-            # plcconnect.SendFeederSpeed(plc, feeder_speed)
-
-    elif PLC_data_frequency == PLCDataFrequency.AFTER_BRIGHTNESS_CHANGE:
-        if connected_to_plc and (average_brightness > 0):        
-            plc_mass = plcconnect.GetFeederMass(plc)
-            fed_plc_mass = starting_plc_mass - plc_mass
-            # plcconnect.SendFeederSpeed(plc, feeder_speed)
-
-    elif PLC_data_frequency == PLCDataFrequency.AFTER_INTERVAL:
-        if connected_to_plc and ((global_prev_time - last_data_sent_time) >= data_interval_ms):        
-            plc_mass = plcconnect.GetFeederMass(plc)
-            fed_plc_mass = starting_plc_mass - plc_mass
-            # plcconnect.SendFeederSpeed(plc, feeder_speed)
-
+    if (global_prev_time - last_data_sent_time) > plc_data_frequency:
+        if connected_to_plc:
+            plccomm.SendBlobVolume(plc, cummulative_volume)
+        last_data_sent_time = global_prev_time
+        cummulative_volume = 0
+    
     # Check for 'q' key press to exit the loop
     if cv2.waitKey(1) & 0xFF == ord('q') or cv2.getWindowProperty('Camera', cv2.WND_PROP_AUTOSIZE) == 1.0:
         if connected_to_plc:
