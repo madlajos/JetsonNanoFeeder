@@ -30,13 +30,27 @@ StartRefillPos = 18
 StartPos = 19
 StopPos = 20
 
+def connectToPLC(plc_ip):
+    plc = snap7.client.Client()
+ 
+    try:
+        plc.connect(plc_ip, 0, 1)
+        connected_to_plc = True
+    except Exception as e:
+        print("Failed to connect to PLC:", str(e))
+        plc = None
+    
+    return plc, connected_to_plc 
+
 def PollPLC(plc):
+    # Dummy values until PLC DB is complete
     feeder_state = 1
     commstate = 1
     plc_data_frequency = 500
 
 
     return feeder_state, commstate, plc_data_frequency
+
 
 def SendBlobVolume(plc, cummulative_volume):
     print("")

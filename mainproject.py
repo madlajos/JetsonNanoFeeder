@@ -22,9 +22,9 @@ camera_framerate = 60
 camera_exposure_time_ms = 200
 camera_gain = 10
 camera_gamma = 1
-camera_centerROI_x = True
+camera_centerROI_x = False
 camera_centerROI_y = True
-camera_offsetROI_x = 200
+camera_offsetROI_x = 1003
 camera_offsetROI_y = 600
 
 ### Video Display Settings ###
@@ -43,24 +43,15 @@ video = Video(output_video_filename, camera_image_width, camera_image_height, 'g
 use_PLC = False
 plc_ip = "192.168.0.30"
 
-# Image analysis settings
+### Image analysis settings ###
 min_blob_area = 1000
 threshold_low = 60
 threshold_high = 240
 
-class MassCalcMethod(Enum):
-    BRIGHTNESS = 1
-    BLOBSIZE = 2
-
-mass_calculation_method = MassCalcMethod.BLOBSIZE
-
 imageIndex = 0
+prev_plc_commbyte = 0b00000000
 cumulative_brightness = 0
-cumulative_camera_mass = 0
 connected_to_plc = False
-starting_plc_mass = 0
-fed_plc_mass = 0
-feeder_speed = 0
 cummulative_volume = 0
 feeder_state = 1
 plc_data_frequency = 1000
@@ -75,10 +66,10 @@ def setupCamera():
     camera.Gamma.SetValue(camera_gamma)
 
     #  Set ROI size; (image width - min image width) has to be divisible by min increment
-    nearest_accepted_width = calculateNearestAcceptedImageSize(camera_image_width, camera.Width.GetMin(), 
+    nearest_accepted_width = nearestAcceptedImgSize(camera_image_width, camera.Width.GetMin(), 
                                                             camera.Width.GetMax(), camera.Width.GetInc())
     camera.Width = nearest_accepted_width
-    nearest_accepted_height = calculateNearestAcceptedImageSize(camera_image_height, camera.Height.GetMin(), 
+    nearest_accepted_height = nearestAcceptedImgSize(camera_image_height, camera.Height.GetMin(), 
                                                             camera.Height.GetMax(), camera.Height.GetInc())
     camera.Height = nearest_accepted_height
 
@@ -86,26 +77,30 @@ def setupCamera():
     if camera_centerROI_x:
         camera.OffsetX.SetValue((camera.SensorWidth.GetValue() // 2 - nearest_accepted_width // 2) 
                                 // camera.Width.GetInc() * camera.Width.GetInc())
+    elif nearest_accepted_width + camera_offsetROI_x <= camera.Width.GetMax():
+        camera.OffsetX.SetValue(camera_offsetROI_x // camera.Width.GetInc() * camera.Width.GetInc())
     else:
-        camera.OffsetX.SetValue(camera_offsetROI_x)
+        camera.OffsetX.SetValue(camera.Width.GetMax() - nearest_accepted_width)
 
     if camera_centerROI_y:
         camera.OffsetY.SetValue(((camera.SensorHeight.GetValue() // 2 - nearest_accepted_height // 2) 
                                 // camera.Height.GetInc() * camera.Height.GetInc()) // 2 * 2) 
+    elif nearest_accepted_height + camera_offsetROI_y <= camera.Height.GetMax():
+        camera.OffsetY.SetValue(camera_offsetROI_y // camera.Height.GetInc() * camera.Height.GetInc())
     else:
-        camera.OffsetY.SetValue(camera_offsetROI_y)
+        camera.OffsetY.SetValue(camera.Height.GetMax() - nearest_accepted_height)
     
     # Start image aquisition
     camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
 
-def calculateNearestAcceptedImageSize(user_size, min_size, max_size, min_increment):
+def nearestAcceptedImgSize(user_size, min_size, max_size, min_increment):
     if(user_size < min_size):
         nearest_accepted_size = min_size
     elif(user_size > max_size):
         nearest_accepted_size = max_size
     else:
         diff = user_size - min_size
-        nearest_accepted_size = min_size + (diff // min_increment) * min_increment
+        nearest_accepted_size = min_size + diff // min_increment * min_increment
     return nearest_accepted_size
 
 def getCameraImage():
@@ -121,14 +116,11 @@ def getCameraImage():
     return frame
 
 def analyseImage(frame_mono8):
+    contours_filtered = []
+    frame_blob_volume = 0
+    
     _, frame_thresh = cv2.threshold(frame_mono8, threshold_low, threshold_high, cv2.THRESH_BINARY)
     contours, _ = cv2.findContours(frame_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    contours_filtered = []
-    smaller_diameters = []
-    larger_diameters = []
-    frame_blob_volume = 0
-
     height, width = frame_thresh.shape[:2]
     
     for contour in contours:
@@ -136,7 +128,6 @@ def analyseImage(frame_mono8):
         if area >= min_blob_area:
             contours_filtered.append(contour)
             
-    
     # Exclude particles touching the edge of the image. Slows down analysis.
     #    for point in contour:
     #        x, y = point[0]
@@ -156,48 +147,31 @@ def analyseImage(frame_mono8):
     # 1. Get the particle size (by user setting)
     # 2. Summarize particle volume
     # 3. Convert to mass
-    if mass_calculation_method == MassCalcMethod.BLOBSIZE:
  
-        for contour in contours_filtered:
-            # Fit minAreaRect
-            rect = cv2.minAreaRect(contour)
-            box = cv2.boxPoints(rect)
-            box = np.int0(box)
-
-            width = rect[1][0]
-            height = rect[1][1]
-
-            frame_blob_volume += pow((width + height)/ 2,3) * math.pi / 6 / pow(10, 6)
-
-            # Draw the contours and the fitted rectangle
-            cv2.drawContours(contours_image, [box], 0, (0, 255, 0), 2)
-            cv2.drawContours(contours_image, [contour], 0, (0, 0, 255), 2)
+    for contour in contours_filtered:
+        rect = cv2.minAreaRect(contour)
+        box = cv2.boxPoints(rect)
+        box = np.int0(box)
+        width = rect[1][0]
+        height = rect[1][1]
+        frame_blob_volume += pow((width + height)/ 2,3) * math.pi / 6 / pow(10, 6)
+        # Draw the contours and the fitted rectangle
+        cv2.drawContours(contours_image, [box], 0, (0, 255, 0), 2)
+        cv2.drawContours(contours_image, [contour], 0, (0, 0, 255), 2)
     
     current_time = time.time() * 1000
     time_diff = current_time - global_prev_time
 
-    cv2.putText(contours_image, f'Blob Count: {particle_count}', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-    cv2.putText(contours_image, f'Brightness: {round((average_brightness), 3)}', (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-    cv2.putText(contours_image, f'Blob Volume: {round((frame_blob_volume), 3)}', (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-    cv2.putText(contours_image, f'Cumm Blob Volume: {round((cummulative_volume), 3)}', (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-    cv2.putText(contours_image, f'Frametime: {int(time_diff)}ms', (10, 190), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+    if use_video_display:
+        cv2.putText(contours_image, f'Blob Count: {particle_count}', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        cv2.putText(contours_image, f'Brightness: {round((average_brightness), 3)}', (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        cv2.putText(contours_image, f'Blob Volume: {round((frame_blob_volume), 3)}', (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        cv2.putText(contours_image, f'Cumm Blob Volume: {round((cummulative_volume), 3)}', (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        cv2.putText(contours_image, f'Frametime: {int(time_diff)}ms', (10, 190), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
-    cv2.imshow('Camera', contours_image)
+        cv2.imshow('Camera', contours_image)
 
-    #TODO: A return érték blobvolume/brightness legyen
     return frame_blob_volume
-
-def connectToPLC(plc_ip):
-    plc = snap7.client.Client()
- 
-    try:
-        plc.connect(plc_ip, 0, 1)
-        connected_to_plc = True
-    except Exception as e:
-        print("Failed to connect to PLC:", str(e))
-        plc = None
-    
-    return plc, connected_to_plc      
 
 
 # Find and open the camera
@@ -206,6 +180,7 @@ camera = None
 if use_camera:
     try:
         camera = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateFirstDevice())
+        #TODO:Add Failed to open camera message
         camera.Open()
         converter = pylon.ImageFormatConverter()
         setupCamera()
@@ -215,13 +190,13 @@ if use_camera:
 # Connect to the PLC
 if use_PLC:
     try:
-        plc, connected_to_plc = connectToPLC(plc_ip)
+        plc, connected_to_plc = plccomm.connectToPLC(plc_ip)
         if connected_to_plc:
             print("Successfully connected to the PLC!")
     except Exception as e:
         print("Failed to connect to PLC:", str(e))
 
-# Create a VideoCapture object for reading from a saved video file if use_camera is False
+# Create a VideoCapture object for reading from offline video
 if not use_camera:
     cap = cv2.VideoCapture(input_video_filename)
     if not cap.isOpened():
@@ -240,7 +215,12 @@ last_data_sent_time = global_prev_time
 
 while ((camera is not None and camera.IsGrabbing()) or (not use_camera and ret)):
     if connected_to_plc:
-        feeder_state, commstate, plc_data_frequency = plccomm.PollPLC(plc)
+        feeder_state, plc_commbyte, plc_data_frequency = plccomm.PollPLC(plc)
+        #TODO: plc_commbyte Handling
+
+        prev_plc_commbyte = plc_commbyte
+
+
 
     if use_camera and feeder_state == 1:
         frame = getCameraImage()
