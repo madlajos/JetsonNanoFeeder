@@ -2,33 +2,30 @@ import snap7
 from snap7.util import *
 import struct
 
-ReadBlock = 23
-WriteBlock = 30
-ReadBuffLength = 16
+# Constants for PLC DB
+db_number = 2
 WriteBuffLength = 21
 
-# Constants for ReadFeeder
-RPMPos = 0
-RPMSize = 4
+# Operation state of the PLC. 0-Idle, 1-Feeding
+op_state_pos = 0
+op_state_size = 4
 
-FeedRatePos = 4
-FeedRateSize = 4
+# Data transmission frequency to PLC of measured BlobVolume in ms 
+data_freq_pos = 4
+data_freq_size = 4
 
-MassPos = 8
-MassSize = 4
+# Measured BlobVolume
+blob_volume_pos = 8
+blob_volume_size = 4
 
-VersionPos = 12
-VersionSize = 4
+# Byte for communication state polling
+# First bit is toggled by PLC, second bit is toggled by Jetson
+comm_state_pos = 12
+comm_state_size = 2
 
-# Constants for WriteFeeder
-RPMPos = 0
-FeedRatePos = 4
-RPM1Pos = 8
-RPM2Pos = 12
-OpModePos = 16
-StartRefillPos = 18
-StartPos = 19
-StopPos = 20
+# Byte for sending error codes to PLC
+error_code_pos = 14
+error_code_size = 2
 
 def connectToPLC(plc_ip):
     plc = snap7.client.Client()
@@ -43,64 +40,28 @@ def connectToPLC(plc_ip):
     return plc, connected_to_plc 
 
 def PollPLC(plc):
-    # Dummy values until PLC DB is complete
-    feeder_state = 1
-    commstate = 1
-    plc_data_frequency = 500
+    data = plc.db_read(db_number, op_state_pos, op_state_size)
+    op_state = struct.unpack(">I", data)[0]
+    
+    data = plc.db_read(db_number, data_freq_pos, data_freq_size)
+    data_frequency = struct.unpack(">I", data)[0]
+    
+    data = plc.db_read(db_number, comm_state_pos, comm_state_size)
+    commstate = struct.unpack("B", data)[0]
 
+    return op_state, commstate, data_frequency
 
-    return feeder_state, commstate, plc_data_frequency
-
+def sendCommByte(plc, commByte):
+    db_w_buffer = bytearray(WriteBuffLength)
+    struct.pack_into("B", db_w_buffer, comm_state_pos, commByte)
+    plc.db_write(db_number, 0, db_w_buffer)
 
 def SendBlobVolume(plc, cummulative_volume):
-    print("")
+    db_w_buffer = bytearray(WriteBuffLength)
+    struct.pack_into(">f", db_w_buffer, blob_volume_pos, cummulative_volume)
+    plc.db_write(db_number, 0, db_w_buffer)
 
-    
-
-
-""" def GetFeederVersion(plc):
-    #plc = snap7.client.Client()
-    #plc.connect(plc_ip, 0, 1)
-    
-    data = plc.db_read(ReadBlock, VersionPos, VersionSize)
-    version_int = struct.unpack(">I", data)[0]
-    plc_version = struct.unpack("f", struct.pack("I", version_int))[0]
-    #plc.disconnect()
-
-    return plc_version
-
-
-def GetFeederMass(plc):
-    #plc = snap7.client.Client()
-    #plc.connect(plc_ip, 0, 1)
-    
-    data = plc.db_read(ReadBlock, MassPos, MassSize)
-    mass_int = struct.unpack(">I", data)[0]
-    plc_mass = struct.unpack("f", struct.pack("I", mass_int))[0]
-    #plc.disconnect()
-    #plc_mass = 0
-    return plc_mass
-
-# TODO: Needs Testing
-def start_feeder(plc):
-    db_w_buffer = bytearray(21)
-    snap7.util.set_bool(db_w_buffer, self.StartPos, True)
-
-    plc.client.db_write(WriteBlock, 0, db_w_buffer)
-
-# TODO: Needs Testing
-def stop_feeder(plc):
-    db_w_buffer = bytearray(21)
-    snap7.util.set_bool(db_w_buffer, plc.StartPos, False)
-
-    plc.client.db_write(self.WriteBlock, 0, db_w_buffer)
-
-# TODO: Needs Testing
-def SendFeederSpeed(plc, feeder_speed):
-    db_w_buffer = bytearray(21)
-    if feeder_speed is not None:
-        # Set the real value in the buffer
-        struct.pack_into(">f", db_w_buffer, RPMPos, feeder_speed)
-
-         # Write the data to the PLC
-        plc.db_write(WriteBlock, 0, db_w_buffer) """
+def SendPLCError(plc, error_code):
+    db_w_buffer = bytearray(WriteBuffLength)
+    struct.pack_into("B", db_w_buffer, error_code_pos, error_code_size)
+    plc.db_write(db_number, 0, db_w_buffer)

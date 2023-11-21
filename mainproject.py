@@ -26,6 +26,8 @@ camera_centerROI_x = False
 camera_centerROI_y = True
 camera_offsetROI_x = 1003
 camera_offsetROI_y = 600
+camera_packet_size = 8192
+camera_inter_packet_delay = 512
 
 ### Video Display Settings ###
 use_video_display = True
@@ -50,6 +52,7 @@ threshold_high = 240
 
 imageIndex = 0
 prev_plc_commbyte = 0b00000000
+plc_error_code = 0b00000000
 cumulative_brightness = 0
 connected_to_plc = False
 cummulative_volume = 0
@@ -64,6 +67,8 @@ def setupCamera():
     camera.ExposureTime.SetValue(camera_exposure_time_ms)
     camera.Gain.SetValue(camera_gain)
     camera.Gamma.SetValue(camera_gamma)
+    camera.GevSCPSPacketSize.SetValue(camera_packet_size)
+    camera.GevSCPD.SetValue(camera_inter_packet_delay)
 
     #  Set ROI size; (image width - min image width) has to be divisible by min increment
     nearest_accepted_width = nearestAcceptedImgSize(camera_image_width, camera.Width.GetMin(), 
@@ -111,8 +116,11 @@ def getCameraImage():
         image.PixelFormat = "Mono8"
         converted_image = converter.Convert(image)
         frame = converted_image.GetArray()
-    grab_result.Release()
-
+    else:
+        print("Failed to grab image from camera!")
+        plccomm.SendPLCError(plc, plc_error_code | 0b00000010)
+        grab_result.Release()
+    
     return frame
 
 def analyseImage(frame_mono8):
@@ -142,12 +150,6 @@ def analyseImage(frame_mono8):
     
     average_brightness = round(cv2.mean(frame_thresh)[0], 3)
 
-    #TODO: Volume-based mass calculation.
-    # Working principle:
-    # 1. Get the particle size (by user setting)
-    # 2. Summarize particle volume
-    # 3. Convert to mass
- 
     for contour in contours_filtered:
         rect = cv2.minAreaRect(contour)
         box = cv2.boxPoints(rect)
@@ -180,12 +182,12 @@ camera = None
 if use_camera:
     try:
         camera = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateFirstDevice())
-        #TODO:Add Failed to open camera message
         camera.Open()
         converter = pylon.ImageFormatConverter()
         setupCamera()
     except Exception as e:
         print("Failed to open camera:", str(e))
+        plccomm.SendPLCError(plc, plc_error_code | 0b00000001)
 
 # Connect to the PLC
 if use_PLC:
@@ -216,11 +218,11 @@ last_data_sent_time = global_prev_time
 while ((camera is not None and camera.IsGrabbing()) or (not use_camera and ret)):
     if connected_to_plc:
         feeder_state, plc_commbyte, plc_data_frequency = plccomm.PollPLC(plc)
-        #TODO: plc_commbyte Handling
-
+        
+        # If first bit changed, flip the second
+        if plc_commbyte != prev_plc_commbyte:
+            plccomm.sendCommByte(plc, plc_commbyte ^ 0b00000010) 
         prev_plc_commbyte = plc_commbyte
-
-
 
     if use_camera and feeder_state == 1:
         frame = getCameraImage()
