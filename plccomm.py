@@ -4,27 +4,27 @@ import struct
 
 # Constants for PLC DB
 db_number = 2
-WriteBuffLength = 21
+WriteBuffLength = 12
 
 # Operation state of the PLC. 0-Idle, 1-Feeding
 op_state_pos = 0
-op_state_size = 4
+op_state_size = 2
 
 # Data transmission frequency to PLC of measured BlobVolume in ms 
-data_freq_pos = 4
-data_freq_size = 4
+data_freq_pos = 2
+data_freq_size = 2
 
 # Measured BlobVolume
-blob_volume_pos = 8
+blob_volume_pos = 4
 blob_volume_size = 4
 
 # Byte for communication state polling
 # First bit is toggled by PLC, second bit is toggled by Jetson
-comm_state_pos = 12
+comm_state_pos = 8
 comm_state_size = 2
 
 # Byte for sending error codes to PLC
-error_code_pos = 14
+error_code_pos = 10
 error_code_size = 2
 
 def connectToPLC(plc_ip):
@@ -40,28 +40,30 @@ def connectToPLC(plc_ip):
     return plc, connected_to_plc 
 
 def PollPLC(plc):
-    data = plc.db_read(db_number, op_state_pos, op_state_size)
-    op_state = struct.unpack(">I", data)[0]
-    
-    data = plc.db_read(db_number, data_freq_pos, data_freq_size)
-    data_frequency = struct.unpack(">I", data)[0]
-    
-    data = plc.db_read(db_number, comm_state_pos, comm_state_size)
-    commstate = struct.unpack("B", data)[0]
+    try:
+        data = plc.db_read(db_number, 0, 12)
+        op_state, data_frequency, blob_volume, comm_state, error_code = struct.unpack(">hhIHH", data)
 
-    return op_state, commstate, data_frequency
+        return op_state, comm_state, data_frequency
+
+    except Exception as e:
+        print("Error reading from PLC:", str(e))
+        return None
 
 def sendCommByte(plc, commByte):
-    db_w_buffer = bytearray(WriteBuffLength)
-    struct.pack_into("B", db_w_buffer, comm_state_pos, commByte)
-    plc.db_write(db_number, 0, db_w_buffer)
+    db_w_buffer = bytearray(2)
+    struct.pack_into(">H", db_w_buffer, 0, commByte)
+    plc.db_write(db_number, 8, db_w_buffer)
+    print("CommByte Switched to: " + str(commByte)) 
 
 def SendBlobVolume(plc, cummulative_volume):
-    db_w_buffer = bytearray(WriteBuffLength)
-    struct.pack_into(">f", db_w_buffer, blob_volume_pos, cummulative_volume)
-    plc.db_write(db_number, 0, db_w_buffer)
+    db_w_buffer = bytearray(4)
+    struct.pack_into(">I", db_w_buffer, 0, int(cummulative_volume))
+    plc.db_write(db_number, 4, db_w_buffer)
+    print("BlobVolume Sent: " + str(cummulative_volume)) 
 
 def SendPLCError(plc, error_code):
-    db_w_buffer = bytearray(WriteBuffLength)
-    struct.pack_into("B", db_w_buffer, error_code_pos, error_code_size)
-    plc.db_write(db_number, 0, db_w_buffer)
+    db_w_buffer = bytearray(2)
+    struct.pack_into(">H", db_w_buffer, 0, error_code)
+    plc.db_write(db_number, 10, db_w_buffer)
+    print("PLC Error sent: " + str(error_code))
