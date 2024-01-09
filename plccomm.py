@@ -1,6 +1,7 @@
 import snap7
 from snap7.util import *
 import struct
+import array as arr
 
 # Constants for PLC DB
 db_number = 2
@@ -49,6 +50,22 @@ def PollPLC(plc):
     except Exception as e:
         print("Error reading from PLC:", str(e))
         return None
+
+def getCameraParamsFromPLC(plc):
+    try:
+        data = plc.db_read(db_number, 0, 32)
+        
+        print(data)
+        data2 = data[12:32]
+        print(data2)
+        image_width, image_height, exposure_time, gain, gamma, x_offset, y_offset, threshold_low, threshold_high, background = struct.unpack(">hhhhhhhhhh", data2)
+
+        return image_width, image_height, exposure_time, gain, gamma, x_offset, y_offset, threshold_low, threshold_high, background
+
+    except Exception as e:
+        print("Error reading from PLC:", str(e))
+        return None
+
 
 def sendCommByte(plc, commByte):
     db_w_buffer = bytearray(2)

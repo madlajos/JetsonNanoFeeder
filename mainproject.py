@@ -16,15 +16,15 @@ use_camera = True
 input_video_filename = "test_video.mp4" 
 
 ### Camera Settings ###
-camera_image_width = 600
+camera_image_width = 800
 camera_image_height = 600
 camera_framerate = 60
 camera_exposure_time_ms = 200
 camera_gain = 10
 camera_gamma = 1
-camera_centerROI_x = False
+camera_centerROI_x = True
 camera_centerROI_y = True
-camera_offsetROI_x = 700
+camera_offsetROI_x = 320
 camera_offsetROI_y = 600
 camera_packet_size = 8192
 camera_inter_packet_delay = 512
@@ -46,9 +46,10 @@ use_PLC = True
 plc_ip = "192.168.10.30"
 
 ### Image analysis settings ###
-min_blob_area = 1000
-threshold_low = 16
-threshold_high = 200
+min_blob_area = 20
+threshold_low = 35
+threshold_high = 120
+img_background = 0   # Dark background = 0 White Background = 1
 
 imageIndex = 0
 plc_commbyte = 0b00000000
@@ -56,6 +57,7 @@ prev_plc_commbyte = 0b00000000
 plc_error_code = 0b00000000
 cumulative_brightness = 0
 connected_to_plc = False
+connected_to_camera = False
 cummulative_volume = 0
 feeder_state = 0
 plc_data_frequency = 500
@@ -111,6 +113,29 @@ def nearestAcceptedImgSize(user_size, min_size, max_size, min_increment):
         nearest_accepted_size = min_size + diff // min_increment * min_increment
     return nearest_accepted_size
 
+def modifyImageSettings():
+    #Function to overwrite camera settings. TODO: Merge with setupCamera()
+    plccomm.getCameraParamsFromPLC(plc)
+    
+    
+    image_width, image_height, exposure_time, gain, gamma, x_offset, y_offset, th_low, th_high, background = plccomm.getCameraParamsFromPLC(plc)
+
+    threshold_low = th_low
+    threshold_high = th_high
+    img_background = background
+
+    camera.StopGrabbing()
+
+    camera.Width.SetValue(image_width)
+    camera.Height.SetValue(image_height)
+    camera.OffsetX.SetValue(x_offset)
+    camera.OffsetY.SetValue(y_offset)
+    camera.ExposureTime.SetValue(exposure_time)
+    camera.Gain.SetValue(gain)
+    camera.Gamma.SetValue(gamma)
+
+    camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
+
 def getCameraImage():
     #TODO: try-catchbe tenni
     grab_result = camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
@@ -131,7 +156,10 @@ def analyseImage(frame_mono8):
     contours_filtered = []
     frame_blob_volume = 0
     
-    _, frame_thresh = cv2.threshold(frame_mono8, threshold_low, threshold_high, cv2.THRESH_BINARY)
+    if (img_background == 0):
+        _, frame_thresh = cv2.threshold(frame_mono8, threshold_low, threshold_high, cv2.THRESH_BINARY)
+    if (img_background == 1):
+         _, frame_thresh = cv2.threshold(frame_mono8, threshold_low, threshold_high, cv2.THRESH_BINARY_INV)
     contours, _ = cv2.findContours(frame_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     height, width = frame_thresh.shape[:2]
     
@@ -182,28 +210,33 @@ def analyseImage(frame_mono8):
 
 # Connect to the PLC
 if use_PLC:
-    try:
-        plc, connected_to_plc = plccomm.connectToPLC(plc_ip)
-        if connected_to_plc:
-            print("Successfully connected to the PLC!")
-            feeder_state, plc_commbyte, plc_data_frequency = plccomm.PollPLC(plc)
-    except Exception as e:
-        print("Failed to connect to PLC:", str(e))
+    while (not connected_to_plc):
+        try:
+            plc, connected_to_plc = plccomm.connectToPLC(plc_ip)
+            if connected_to_plc:
+                print("Successfully connected to the PLC!")
+                feeder_state, plc_commbyte, plc_data_frequency = plccomm.PollPLC(plc)
+        except Exception as e:
+            print("Failed to connect to PLC:", str(e))
+            time.sleep(5)
 
 
 # Find and open the camera
 # Create an ImageFormatConverter object
 camera = None
 if use_camera:
-    try:
-        camera = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateFirstDevice())
-        camera.Open()
-        converter = pylon.ImageFormatConverter()
-        setupCamera()
-    except Exception as e:
-        print("Failed to open camera:", str(e))
-        #TODO: Ha nincs PLC se, akkor ne szarjon be
-        plccomm.SendPLCError(plc, plc_error_code | 0b00000001)
+    while (not connected_to_camera):
+        try:
+            camera = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateFirstDevice())
+            camera.Open()
+            converter = pylon.ImageFormatConverter()
+            setupCamera()
+            connected_to_camera = True
+        except Exception as e:
+            print("Failed to open camera:", str(e))
+            #TODO: Ha nincs PLC se, akkor ne szarjon be
+            plccomm.SendPLCError(plc, plc_error_code | 0b00000001)
+            time.sleep(5)
 
 # Create a VideoCapture object for reading from offline video
 if not use_camera:
@@ -231,12 +264,15 @@ while ((camera is not None and camera.IsGrabbing()) or (not use_camera and ret))
 
         #frame_mono8 = cv2.rotate(frame_mono8, cv2.ROTATE_90_COUNTERCLOCKWISE)
         volume_from_frame = analyseImage(frame)
-    
+        
+        imageIndex += 1
+        cummulative_volume += volume_from_frame
+
     # Offline video analysis for testing
     if not use_camera:
         ret, frame = cap.read()
         if not ret:
-            # End of video file, break the loop
+        #End of video file, break the loop
             break
 
         # Convert the frame to grayscale if necessary
@@ -244,14 +280,21 @@ while ((camera is not None and camera.IsGrabbing()) or (not use_camera and ret))
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         volume_from_frame = analyseImage(frame)
-    
-    imageIndex += 1
-    cummulative_volume += volume_from_frame
+        
+        imageIndex += 1
+        cummulative_volume += volume_from_frame
+
     global_prev_time = time.time() * 1000
-    
+
     if (global_prev_time - last_data_sent_time) > plc_data_frequency:
         if connected_to_plc:
             feeder_state, plc_commbyte, plc_data_frequency = plccomm.PollPLC(plc)
+
+            if feeder_state == 4:
+                #Settings changed
+                modifyImageSettings()
+                # Set feeder_state to 5
+
 
         # If first bit changed, flip the second
         if plc_commbyte != prev_plc_commbyte and plc_commbyte == 1:
@@ -259,9 +302,10 @@ while ((camera is not None and camera.IsGrabbing()) or (not use_camera and ret))
 
         prev_plc_commbyte = plc_commbyte
 
-        plccomm.SendBlobVolume(plc, cummulative_volume)
-        last_data_sent_time = global_prev_time
-        cummulative_volume = 0
+        if feeder_state == 1:
+            plccomm.SendBlobVolume(plc, cummulative_volume)
+            last_data_sent_time = global_prev_time
+            cummulative_volume = 0
     
     # Check for 'q' key press to exit the loop
     if cv2.waitKey(1) & 0xFF == ord('q') or cv2.getWindowProperty('Camera', cv2.WND_PROP_AUTOSIZE) == 1.0:
