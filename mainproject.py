@@ -42,7 +42,7 @@ output_video_filename = "output_video.mp4"
 # video = Video(output_video_filename, camera_image_width, camera_image_height, 'gray', camera_framerate)
 
 ### PLC Settings ###
-use_PLC = True
+use_PLC = False
 plc_ip = "192.168.10.30"
 
 ### Image analysis settings ###
@@ -50,6 +50,33 @@ min_blob_area = 20
 threshold_low = 35
 threshold_high = 120
 img_background = 0   # Dark background = 0 White Background = 1
+
+# Library to initialise and receive Camera parameters from PLC 
+camera_params = {
+    'ImageWidth': camera_image_width, 
+    'ImageHeight': camera_image_height, 
+    'FrameRate': camera_framerate, 
+    'ExposureTime': camera_exposure_time_ms, 
+    'Gain': camera_gain, 
+    'Gamma': camera_gamma,
+    'OffsetX': camera_offsetROI_x,
+    'OffsetY': camera_offsetROI_y 
+}
+
+# Library to send back correct Image parameters to PLC
+image_params = {
+    'ImageWidth': camera_image_width,
+    'ImageHeight': camera_image_height,
+    'OffsetX': camera_offsetROI_x,
+    'OffsetY': camera_offsetROI_y
+}
+
+# Library to initialise and receive Threshold parameters from PLC
+threshold_params = {
+    'ThresholdLow': threshold_low,
+    'ThresholdHigh': threshold_high,
+    'Background': img_background
+}
 
 imageIndex = 0
 plc_commbyte = 0b00000000
@@ -64,46 +91,55 @@ plc_data_frequency = 500
 ret = True
 volume_from_frame = 0
 
-
-def setupCamera():
+def setupCamera(camera_params):
     # Set camera parameters
     camera.AcquisitionFrameRateEnable.SetValue(True)
-    camera.AcquisitionFrameRate.SetValue(camera_framerate)
-    camera.ExposureTime.SetValue(camera_exposure_time_ms)
-    camera.Gain.SetValue(camera_gain)
-    camera.Gamma.SetValue(camera_gamma)
+    camera.AcquisitionFrameRate.SetValue(camera_params['FrameRate'])
+    camera.ExposureTime.SetValue(camera_params['ExposureTime'])
+    camera.Gain.SetValue(camera_params['Gain'])
+    camera.Gamma.SetValue(camera_params['Gamma'])
     camera.GevSCPSPacketSize.SetValue(camera_packet_size)
     camera.GevSCPD.SetValue(camera_inter_packet_delay)
 
     #  Set ROI size; (image width - min image width) has to be divisible by min increment
-    nearest_accepted_width = nearestAcceptedImgSize(camera_image_width, camera.Width.GetMin(), 
-                                                            camera.Width.GetMax(), camera.Width.GetInc())
+    nearest_accepted_width = nearestAcceptedImgSize(camera_params['ImageWidth'], "width")
     camera.Width = nearest_accepted_width
-    nearest_accepted_height = nearestAcceptedImgSize(camera_image_height, camera.Height.GetMin(), 
-                                                            camera.Height.GetMax(), camera.Height.GetInc())
+    nearest_accepted_height = nearestAcceptedImgSize(camera_params['ImageHeight'], "height")
     camera.Height = nearest_accepted_height
 
-    # Set ROI Offset; Either Center or by Fix value
+    # Set ROI Offset; Either Center or by Fix value; If the image would get pushed over the limit, allign it right on the sensor
     if camera_centerROI_x:
         camera.OffsetX.SetValue((camera.SensorWidth.GetValue() // 2 - nearest_accepted_width // 2) 
                                 // camera.Width.GetInc() * camera.Width.GetInc())
-    elif nearest_accepted_width + camera_offsetROI_x <= camera.Width.GetMax():
-        camera.OffsetX.SetValue(camera_offsetROI_x // camera.Width.GetInc() * camera.Width.GetInc())
+    elif nearest_accepted_width + camera_params['OffsetX'] <= camera.Width.GetMax():
+        camera.OffsetX.SetValue(camera_params['OffsetX'] // camera.Width.GetInc() * camera.Width.GetInc())
     else:
         camera.OffsetX.SetValue(camera.Width.GetMax() - nearest_accepted_width)
 
     if camera_centerROI_y:
         camera.OffsetY.SetValue(((camera.SensorHeight.GetValue() // 2 - nearest_accepted_height // 2) 
                                 // camera.Height.GetInc() * camera.Height.GetInc()) // 2 * 2) 
-    elif nearest_accepted_height + camera_offsetROI_y <= camera.Height.GetMax():
-        camera.OffsetY.SetValue(camera_offsetROI_y // camera.Height.GetInc() * camera.Height.GetInc())
+    elif nearest_accepted_height + camera_params['OffsetY'] <= camera.Height.GetMax():
+        camera.OffsetY.SetValue(camera_params['OffsetY'] // camera.Height.GetInc() * camera.Height.GetInc())
     else:
         camera.OffsetY.SetValue(camera.Height.GetMax() - nearest_accepted_height)
     
-    # Start image aquisition
-    camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
+    image_params['ImageWidth'] = nearest_accepted_width
+    image_params['ImageHeight'] = nearest_accepted_height
+    image_params['OffsetX'] = camera.OffsetX.GetValue()
+    image_params['OffsetY'] = camera.OffsetY.GetValue()
 
-def nearestAcceptedImgSize(user_size, min_size, max_size, min_increment):
+def nearestAcceptedImgSize(user_size, dimension):
+    if dimension == "width":
+        min_size = camera.Width.GetMin()
+        max_size = camera.Width.GetMax()
+        min_increment = camera.Width.GetInc()
+
+    elif dimension == "height": 
+        min_size = camera.Height.GetMin()
+        max_size = camera.Height.GetMax()
+        min_increment = camera.Height.GetInc()
+
     if(user_size < min_size):
         nearest_accepted_size = min_size
     elif(user_size > max_size):
@@ -111,45 +147,26 @@ def nearestAcceptedImgSize(user_size, min_size, max_size, min_increment):
     else:
         diff = user_size - min_size
         nearest_accepted_size = min_size + diff // min_increment * min_increment
+    
     return nearest_accepted_size
 
-def modifyImageSettings():
-    #Function to overwrite camera settings. TODO: Merge with setupCamera()
-    plccomm.getCameraParamsFromPLC(plc)
-    
-    
-    image_width, image_height, exposure_time, gain, gamma, x_offset, y_offset, th_low, th_high, background = plccomm.getCameraParamsFromPLC(plc)
-
-    threshold_low = th_low
-    threshold_high = th_high
-    img_background = background
-
-    camera.StopGrabbing()
-
-    camera.Width.SetValue(image_width)
-    camera.Height.SetValue(image_height)
-    camera.OffsetX.SetValue(x_offset)
-    camera.OffsetY.SetValue(y_offset)
-    camera.ExposureTime.SetValue(exposure_time)
-    camera.Gain.SetValue(gain)
-    camera.Gamma.SetValue(gamma)
-
-    camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
-
 def getCameraImage():
-    #TODO: try-catchbe tenni
-    grab_result = camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
-    if grab_result.GrabSucceeded():
-        image = pylon.PylonImage()
-        image.AttachGrabResultBuffer(grab_result)
-        image.PixelFormat = "Mono8"
-        converted_image = converter.Convert(image)
-        frame = converted_image.GetArray()
-    else:
-        print("Failed to grab image from camera!")
+    try:
+        grab_result = camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
+
+        if grab_result.GrabSucceeded():
+            image = pylon.PylonImage()
+            image.AttachGrabResultBuffer(grab_result)
+            image.PixelFormat = "Mono8"
+            converted_image = converter.Convert(image)
+            frame = converted_image.GetArray()
+            grab_result.Release()
+
+    except Exception as e:
+        print("Error while grabbing image from camera:", str(e))
         plccomm.SendPLCError(plc, plc_error_code | 0b00000010)
-        grab_result.Release()
-    
+        frame = None
+
     return frame
 
 def analyseImage(frame_mono8):
@@ -207,7 +224,6 @@ def analyseImage(frame_mono8):
 
     return frame_blob_volume
 
-
 # Connect to the PLC
 if use_PLC:
     while (not connected_to_plc):
@@ -220,7 +236,6 @@ if use_PLC:
             print("Failed to connect to PLC:", str(e))
             time.sleep(5)
 
-
 # Find and open the camera
 # Create an ImageFormatConverter object
 camera = None
@@ -230,12 +245,17 @@ if use_camera:
             camera = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateFirstDevice())
             camera.Open()
             converter = pylon.ImageFormatConverter()
-            setupCamera()
+            setupCamera(camera_params)
+            
+            # Start image aquisition
+            camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
+
             connected_to_camera = True
         except Exception as e:
             print("Failed to open camera:", str(e))
             #TODO: Ha nincs PLC se, akkor ne szarjon be
-            plccomm.SendPLCError(plc, plc_error_code | 0b00000001)
+            if connected_to_plc:
+                plccomm.SendPLCError(plc, plc_error_code | 0b00000001)
             time.sleep(5)
 
 # Create a VideoCapture object for reading from offline video
@@ -291,11 +311,15 @@ while ((camera is not None and camera.IsGrabbing()) or (not use_camera and ret))
             feeder_state, plc_commbyte, plc_data_frequency = plccomm.PollPLC(plc)
 
             if feeder_state == 4:
-                #Settings changed
-                modifyImageSettings()
-                # Set feeder_state to 5
-
-
+                # Settings changed on PLC, send them to the camera
+                camera.StopGrabbing()
+                plccomm.getCameraParamsFromPLC(plc, camera_params, threshold_params)
+                setupCamera(camera_params)
+                camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
+                
+                # Send the corrected image parameters to the PLC, and set the operation state to 5
+                plccomm.SendImageParamsToPLC(plc, image_params)
+                
         # If first bit changed, flip the second
         if plc_commbyte != prev_plc_commbyte and plc_commbyte == 1:
             plccomm.sendCommByte(plc, 3)
