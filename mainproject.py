@@ -5,6 +5,7 @@ import snap7
 from snap7.util import *
 import struct
 import plccomm
+from scalereader import ScaleReader
 from video import Video
 from enum import Enum
 import numpy as np
@@ -21,7 +22,8 @@ camera_image_height = 600
 camera_framerate = 60
 camera_exposure_time_ms = 200
 camera_gain = 10
-camera_gamma = 1
+# Gamma is stored with a 100 multiplication
+camera_gamma = 100
 camera_centerROI_x = True
 camera_centerROI_y = True
 camera_offsetROI_x = 320
@@ -42,7 +44,7 @@ output_video_filename = "output_video.mp4"
 # video = Video(output_video_filename, camera_image_width, camera_image_height, 'gray', camera_framerate)
 
 ### PLC Settings ###
-use_PLC = False
+use_PLC = True
 plc_ip = "192.168.10.30"
 
 ### Image analysis settings ###
@@ -50,6 +52,12 @@ min_blob_area = 20
 threshold_low = 35
 threshold_high = 120
 img_background = 0   # Dark background = 0 White Background = 1
+
+# Reference scale Settings
+use_scale = False
+connected_to_scale = False
+if use_scale:
+    scale_reader = ScaleReader(serial_port='/dev/ttyUSB0', baud_rate=9600)
 
 # Library to initialise and receive Camera parameters from PLC 
 camera_params = {
@@ -97,7 +105,7 @@ def setupCamera(camera_params):
     camera.AcquisitionFrameRate.SetValue(camera_params['FrameRate'])
     camera.ExposureTime.SetValue(camera_params['ExposureTime'])
     camera.Gain.SetValue(camera_params['Gain'])
-    camera.Gamma.SetValue(camera_params['Gamma'])
+    camera.Gamma.SetValue(camera_params['Gamma'] / 100)
     camera.GevSCPSPacketSize.SetValue(camera_packet_size)
     camera.GevSCPD.SetValue(camera_inter_packet_delay)
 
@@ -232,6 +240,7 @@ if use_PLC:
             if connected_to_plc:
                 print("Successfully connected to the PLC!")
                 feeder_state, plc_commbyte, plc_data_frequency = plccomm.PollPLC(plc)
+                camera_params, threshold_params = plccomm.getCameraParamsFromPLC(plc, camera_params, threshold_params)
         except Exception as e:
             print("Failed to connect to PLC:", str(e))
             time.sleep(5)
@@ -257,6 +266,14 @@ if use_camera:
             if connected_to_plc:
                 plccomm.SendPLCError(plc, plc_error_code | 0b00000001)
             time.sleep(5)
+
+if use_scale:
+    try:
+        scale_reader.init()
+        connected_to_scale = True
+
+    except Exception as e:
+        print("Failed to init scale:", str(e))
 
 # Create a VideoCapture object for reading from offline video
 if not use_camera:
@@ -313,7 +330,7 @@ while ((camera is not None and camera.IsGrabbing()) or (not use_camera and ret))
             if feeder_state == 4:
                 # Settings changed on PLC, send them to the camera
                 camera.StopGrabbing()
-                plccomm.getCameraParamsFromPLC(plc, camera_params, threshold_params)
+                camera_params, threshold_params = plccomm.getCameraParamsFromPLC(plc, camera_params, threshold_params)
                 setupCamera(camera_params)
                 camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
                 
@@ -330,6 +347,8 @@ while ((camera is not None and camera.IsGrabbing()) or (not use_camera and ret))
             plccomm.SendBlobVolume(plc, cummulative_volume)
             last_data_sent_time = global_prev_time
             cummulative_volume = 0
+            if connected_to_scale:
+                scale_reader.read_scale()
     
     # Check for 'q' key press to exit the loop
     if cv2.waitKey(1) & 0xFF == ord('q') or cv2.getWindowProperty('Camera', cv2.WND_PROP_AUTOSIZE) == 1.0:
