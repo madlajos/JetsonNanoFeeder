@@ -82,13 +82,14 @@ def sendCommByte(plc, commByte):
     db_w_buffer = bytearray(2)
     struct.pack_into(">H", db_w_buffer, 0, commByte)
     plc.db_write(db_number, 8, db_w_buffer)
-    print("CommByte Switched to: " + str(commByte)) 
+    #print("CommByte Switched to: " + str(commByte)) 
 
 def SendBlobVolume(plc, cummulative_volume):
     db_w_buffer = bytearray(4)
     struct.pack_into(">I", db_w_buffer, 0, int(cummulative_volume))
     plc.db_write(db_number, 4, db_w_buffer)
-    print("BlobVolume Sent: " + str(cummulative_volume)) 
+    #print("BlobVolume Sent: " + str(cummulative_volume)) 
+    print(cummulative_volume)
 
 def SendPLCError(plc, error_code):
     db_w_buffer = bytearray(2)

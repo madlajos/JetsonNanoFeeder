@@ -18,7 +18,7 @@ input_video_filename = "test_video.mp4"
 
 ### Camera Settings ###
 camera_image_width = 800
-camera_image_height = 600
+camera_image_height = 400
 camera_framerate = 60
 camera_exposure_time_ms = 200
 camera_gain = 10
@@ -27,7 +27,7 @@ camera_gamma = 100
 camera_centerROI_x = True
 camera_centerROI_y = True
 camera_offsetROI_x = 320
-camera_offsetROI_y = 600
+camera_offsetROI_y = 900
 camera_packet_size = 8192
 camera_inter_packet_delay = 512
 
@@ -54,7 +54,7 @@ threshold_high = 120
 img_background = 0   # Dark background = 0 White Background = 1
 
 # Reference scale Settings
-use_scale = False
+use_scale = True
 connected_to_scale = False
 if use_scale:
     scale_reader = ScaleReader(serial_port='/dev/ttyUSB0', baud_rate=9600)
@@ -181,10 +181,10 @@ def analyseImage(frame_mono8):
     contours_filtered = []
     frame_blob_volume = 0
     
-    if (img_background == 0):
-        _, frame_thresh = cv2.threshold(frame_mono8, threshold_low, threshold_high, cv2.THRESH_BINARY)
-    if (img_background == 1):
-         _, frame_thresh = cv2.threshold(frame_mono8, threshold_low, threshold_high, cv2.THRESH_BINARY_INV)
+    if (threshold_params['Background'] == 0):
+        _, frame_thresh = cv2.threshold(frame_mono8, threshold_params['ThresholdLow'], threshold_params['ThresholdHigh'], cv2.THRESH_BINARY)
+    if (threshold_params['Background'] == 1):
+         _, frame_thresh = cv2.threshold(frame_mono8, threshold_params['ThresholdLow'], threshold_params['ThresholdHigh'], cv2.THRESH_BINARY_INV)
     contours, _ = cv2.findContours(frame_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     height, width = frame_thresh.shape[:2]
     
